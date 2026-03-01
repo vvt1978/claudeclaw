@@ -35,9 +35,23 @@ Follow these steps in order. The whole thing takes about 5 minutes.
 | Requirement | Notes |
 |-------------|-------|
 | **Node.js 20+** | Check: `node --version`. Download at [nodejs.org](https://nodejs.org) |
+| **Git** | Check: `git --version`. If you've never used git, also run the two commands below |
 | **Claude Code CLI** | Install: `npm i -g @anthropic-ai/claude-code` |
 | **Claude account** | Log in: `claude login` (free, Pro, or Max plan) |
 | **Telegram account** | Any existing account works |
+
+**First time using git?** Run these two commands first (use your own name and email):
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+Without this, git operations will fail with a confusing error about missing identity.
+
+**macOS users:** After starting ClaudeClaw for the first time, your Mac may show "Node wants to access..." permission dialogs. You need to click Allow on each one or the bot will silently hang. Keep an eye on your Mac screen during the first run.
+
+**Which Claude plan works best?** ClaudeClaw runs the `claude` CLI, so any plan works (Free, Pro, Max). However, complex multi-step tasks (building skills, debugging code, multi-agent work) perform significantly better on **Opus**. If you're on the Free or Pro plan and Claude struggles with a task, the model matters. Sonnet is fast but often can't handle the kind of agentic work ClaudeClaw enables. Max ($100 or $200) with Opus is the recommended experience.
+
+**New to the terminal?** Download [Warp](https://www.warp.dev) — it's a modern terminal with AI built in. If you hit any OS-level issues during setup (permissions, missing tools, PATH problems), type `/agent` in Warp and describe what went wrong. It will walk you through fixing it. This alone will save you hours of Googling.
 
 That's it for hard requirements. Everything else (voice, video, WhatsApp) is optional and the setup wizard will ask about them.
 
@@ -172,6 +186,25 @@ Output looks like:
   ─────────────────
   All systems go.
 ```
+
+---
+
+## Updating ClaudeClaw
+
+When a new version is released, update in 4 commands:
+
+```bash
+cd claudeclaw          # go to your ClaudeClaw directory
+git pull               # pull the latest code
+npm install            # install any new dependencies
+npm run build          # recompile TypeScript
+```
+
+Then restart the bot (Ctrl+C and `npm start`, or restart the background service).
+
+**Do not** point Claude at the GitHub URL to read updates. Claude works with local files, so you need the repo cloned on your machine. `git pull` is how you stay current.
+
+**Upgrading from V1?** If you heavily customized V1, start fresh with V2 and copy over your `.env` and any CLAUDE.md customizations. If you kept V1 mostly stock, `git pull` will work.
 
 ---
 
@@ -336,12 +369,133 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 | `/start` | Confirm the bot is online |
 | `/chatid` | Get your Telegram chat ID |
 | `/newchat` | Start a fresh Claude Code session |
+| `/respin` | After `/newchat`, pull the last 20 conversation turns back as context |
 | `/voice` | Toggle voice response mode on/off |
 | `/memory` | Show recent memories for this chat |
 | `/forget` | Clear current session |
 | `/wa` | Open the WhatsApp interface |
+| `/slack` | Open the Slack interface |
 
 Any other `/command` passes through to Claude and routes to the matching skill.
+
+### /newchat + /respin workflow
+
+Context windows fill up over long conversations. When things start feeling off or Claude starts missing context:
+
+1. Send `/newchat` to start a completely fresh session
+2. Send `/respin` immediately after
+
+`/respin` pulls the last 20 conversation turns from the database and feeds them back into the new session as context. Claude sees what you discussed recently without carrying the full token weight of the old session. It's like a soft restart.
+
+The pulled-in turns are marked as historical context (not new messages), so Claude treats them as background rather than active conversation.
+
+### /slack interface
+
+Send `/slack` to enter Slack mode. It works like the WhatsApp interface:
+
+```
+/slack           list recent conversations (unread first)
+1                open conversation #1, show last 15 messages
+r <text>         reply to the open conversation
+r 2 <text>       quick-reply to conversation #2 without opening it
+```
+
+Type anything that isn't a number or `r <text>` to exit Slack mode and return to normal Claude.
+
+---
+
+## Slack (optional)
+
+Requires a Slack User OAuth Token. This connects to your workspace so ClaudeClaw can read and send messages on your behalf.
+
+### Step 1 — Create a Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps)
+2. Click the green **Create New App** button (top right)
+3. In the popup, choose **From scratch** (not "From an app manifest")
+4. Fill in:
+   - **App Name**: anything you want (e.g. `ClaudeClaw`)
+   - **Pick a workspace**: select the Slack workspace you want to connect
+5. Click **Create App**
+
+You'll land on the **Basic Information** page for your new app.
+
+### Step 2 — Add User Token Scopes
+
+This is the critical step. You need to add permissions so the app can read and send messages as you.
+
+1. In the **left sidebar**, click **OAuth & Permissions**
+2. Scroll down past "OAuth Tokens for Your Workspace" until you see the **Scopes** section
+3. You'll see two subsections: **Bot Token Scopes** and **User Token Scopes**
+4. **Ignore Bot Token Scopes entirely.** Click **Add an OAuth Scope** under **User Token Scopes**
+5. Add each of these scopes one at a time (click **Add an OAuth Scope**, type the name, select it):
+
+   | Scope | Description |
+   |-------|-------------|
+   | `channels:history` | View messages and other content in public channels |
+   | `channels:read` | View basic information about public channels in a workspace |
+   | `chat:write` | Send messages on a user's behalf |
+   | `groups:history` | View messages and other content in private channels |
+   | `groups:read` | View basic information about private channels |
+   | `im:history` | View messages and other content in direct messages |
+   | `im:read` | View basic information about direct messages |
+   | `mpim:history` | View messages and other content in group direct messages |
+   | `mpim:read` | View basic information about group direct messages |
+   | `search:read` | Search a workspace's content |
+   | `users:read` | View people in a workspace |
+
+   After adding all 11, your User Token Scopes section should show all of them listed.
+
+### Step 3 — Install the app to your workspace
+
+1. Scroll back up to the top of the **OAuth & Permissions** page
+2. Under **OAuth Tokens for Your Workspace**, click **Install to Workspace**
+3. Slack will show a permissions screen listing everything the app can do
+4. Click **Allow**
+5. You'll be redirected back to the OAuth & Permissions page
+6. You'll now see a **User OAuth Token** field with a token that starts with `xoxp-`
+7. Click **Copy** to copy the token
+
+### Step 4 — Add the token to ClaudeClaw
+
+1. Open your `.env` file in the ClaudeClaw project directory
+2. Add the token:
+   ```
+   SLACK_USER_TOKEN=xoxp-your-token-here
+   ```
+3. Restart ClaudeClaw
+
+### Step 5 — Verify it works
+
+Send `/slack` in your Telegram chat. You should see a numbered list of your recent Slack conversations with unread counts.
+
+If you get "Slack not connected", double-check:
+- The token starts with `xoxp-` (not `xoxb-` which is a bot token)
+- The `.env` file has no extra spaces around the `=` sign
+- You restarted ClaudeClaw after adding the token
+
+### Using Slack from Claude Code (skill)
+
+ClaudeClaw ships with a Slack CLI at `dist/slack-cli.js` and a matching skill in `skills/slack/`. To use Slack via natural language from any Claude Code session:
+
+```bash
+cp -r skills/slack ~/.claude/skills/slack
+```
+
+Then just say "check my slack" or "message Jane on slack saying hey" and Claude handles the rest.
+
+### Slack CLI reference
+
+```bash
+cd /path/to/claudeclaw
+
+node dist/slack-cli.js list              # List conversations with unread counts
+node dist/slack-cli.js list --limit 10   # Limit results
+node dist/slack-cli.js read <channel_id> # Read messages from a conversation
+node dist/slack-cli.js send <channel_id> "message"  # Send a message
+node dist/slack-cli.js send <channel_id> "reply" --thread-ts 1234.5678  # Thread reply
+node dist/slack-cli.js search "jane"     # Find conversations by name
+```
 
 ---
 
@@ -526,6 +680,8 @@ scheduled_tasks  -- Cron-scheduled autonomous tasks
 wa_message_map   -- Maps Telegram message IDs to WhatsApp chats
 wa_outbox        -- Queued outgoing WhatsApp messages
 wa_messages      -- Incoming WhatsApp message history
+slack_messages   -- Slack message history
+conversation_log -- Full conversation turns (used by /respin)
 ```
 
 Inspect it directly:
@@ -567,11 +723,29 @@ The startup banner is in `banner.txt` at the project root. Replace it with anyth
 
 ## Skills to install
 
-ClaudeClaw auto-loads every skill in `~/.claude/skills/`. These are the most useful:
+ClaudeClaw auto-loads every skill in `~/.claude/skills/`. Install a skill by copying its folder there.
 
-**Core (recommended for everyone):**
-- `gmail` — read, triage, send email
-- `google-calendar` — schedule meetings, check availability
+### Bundled skills
+
+ClaudeClaw ships with ready-to-use skills in the `skills/` directory. Copy any of these to activate them:
+
+```bash
+# Gmail — read, triage, reply, send, create filters
+cp -r skills/gmail ~/.claude/skills/gmail
+
+# Google Calendar — schedule meetings, check availability, send invites
+cp -r skills/google-calendar ~/.claude/skills/google-calendar
+
+# Slack — list conversations, read messages, send replies
+cp -r skills/slack ~/.claude/skills/slack
+```
+
+**Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).
+
+**Slack requires a User OAuth Token.** See the [Slack setup section](#slack-optional) above for step-by-step instructions.
+
+### Other recommended skills
+
 - `todo` — read tasks from Obsidian or text files
 - `agent-browser` — browse the web, fill forms, scrape data
 - `maestro` — run multiple tasks in parallel with sub-agents
@@ -596,6 +770,10 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 | `ELEVENLABS_API_KEY` | No | Voice output — [elevenlabs.io](https://elevenlabs.io) |
 | `ELEVENLABS_VOICE_ID` | No | Your ElevenLabs voice ID string |
 | `GOOGLE_API_KEY` | No | Gemini — [aistudio.google.com](https://aistudio.google.com) |
+| `SLACK_USER_TOKEN` | No | Slack User OAuth Token (starts with `xoxp-`) |
+| `GOOGLE_CREDS_PATH` | No | Path to Google OAuth credentials.json (default: `~/.config/gmail/credentials.json`) |
+| `GMAIL_TOKEN_PATH` | No | Path to Gmail OAuth token (default: `~/.config/gmail/token.json`) |
+| `GCAL_TOKEN_PATH` | No | Path to Calendar OAuth token (default: `~/.config/calendar/token.json`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | No | Override which Claude account is used |
 
 ---
@@ -655,6 +833,22 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 - Check logs: `tail -f /tmp/claudeclaw.log`
 - Run `npm run status` for a full health check
 - Verify Claude auth: `claude --version`
+- **macOS:** Check if your Mac is showing "Node wants to access..." permission dialogs. The bot hangs until you click Allow. This is easy to miss if your Mac screen is off or in the background.
+
+**Setup fails at bracket placeholders**
+- `CLAUDE.md` ships with `[BRACKETED]` placeholder values like `[YOUR NAME]` and `[YOUR ASSISTANT NAME]`
+- These **must** be replaced before the bot can work properly
+- The setup wizard opens `CLAUDE.md` in your editor for this, but if you skip it or your editor doesn't save, edit it manually: open `CLAUDE.md` in any text editor, find/replace all `[BRACKETED]` values with your actual info
+- You do **not** need to fill in every bracket. At minimum: `[YOUR ASSISTANT NAME]`, `[YOUR NAME]`, and `[PATH TO CLAUDECLAW]` (the full path to your claudeclaw directory)
+
+**Git errors during setup**
+- "Please tell me who you are" — run `git config --global user.name "Your Name"` and `git config --global user.email "you@email.com"`
+- Git needs these set once, globally, before it can do anything
+
+**Can't access the internet / "break out"**
+- ClaudeClaw runs the real Claude Code CLI, which has full internet access through its built-in tools (web search, web fetch, bash with curl, etc.)
+- If Claude says it can't access the internet, it's likely a skill or prompt issue, not a ClaudeClaw limitation
+- Make sure your Claude Code CLI works in the terminal first: open a terminal, run `claude`, and ask it to search the web
 
 **Voice notes return an error**
 - `GROQ_API_KEY` must be in `.env` and the bot restarted after adding it
@@ -677,6 +871,34 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 
 **File downloads fail**
 - Telegram caps downloads at 20MB — this is a Telegram API limit, not a ClaudeClaw one
+
+---
+
+## Common confusions
+
+**"Do I need the mega prompt / Rebuild_Prompt.md?"**
+No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt — it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
+
+**"Does this use Claude Remote?"**
+No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
+
+**"Does this work on Windows?"**
+Yes, through WSL2. Install WSL2, clone ClaudeClaw inside the WSL filesystem, and follow the normal Linux setup steps. The setup wizard detects Windows and offers WSL2 or PM2 options.
+
+**"What is GOOGLE_API_KEY for?"**
+Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (those use separate OAuth credentials via the gmail and google-calendar skills). Get it free at [aistudio.google.com](https://aistudio.google.com).
+
+**"Should I watch the Claude Code video first?"**
+Recommended but not required. The video covers how Claude Code works under the hood, which helps you understand what ClaudeClaw is actually doing. But you can set up ClaudeClaw first and watch it later.
+
+**"How do I update when a new version drops?"**
+`cd claudeclaw && git pull && npm install && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
+
+**"Telegram formatting looks broken / not formatting properly"**
+ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code blocks, links). Telegram's formatting support is limited compared to a full web page. If something looks off, it's usually Telegram's rendering, not a bug. For very long or complex responses, the formatting is intentionally kept simple to avoid Telegram parse errors.
+
+**"Can I add extra security like 2FA?"**
+`ALLOWED_CHAT_ID` restricts the bot to your Telegram account, which is the default security layer. Community members have added Google Authenticator (TOTP) for tiered permissions (read-only vs elevated actions with time-limited re-auth). This isn't built in yet, but it's a straightforward addition to `handleMessage()` in `src/bot.ts` if you want that extra layer.
 
 ---
 
@@ -740,10 +962,18 @@ claudeclaw/
 │   ├── scheduler.ts      Cron task runner — fires tasks every 60 seconds
 │   ├── voice.ts          Voice transcription (Groq) and synthesis (ElevenLabs)
 │   ├── media.ts          Downloads files from Telegram, cleans up after 24h
-│   ├── whatsapp.ts       WhatsApp client via whatsapp-web.js
-│   ├── config.ts         Reads .env safely (never pollutes process.env)
-│   ├── env.ts            Low-level .env file parser
-│   └── schedule-cli.ts   CLI tool for managing scheduled tasks
+│   ├── slack.ts           Slack API client (conversations, messages, send)
+│   ├── slack-cli.ts       CLI wrapper for Slack (used by the slack skill)
+│   ├── whatsapp.ts        WhatsApp client via whatsapp-web.js
+│   ├── config.ts          Reads .env safely (never pollutes process.env)
+│   ├── env.ts             Low-level .env file parser
+│   └── schedule-cli.ts    CLI tool for managing scheduled tasks
+│
+│  ← Skills (copy to ~/.claude/skills/ to activate)
+├── skills/
+│   ├── gmail/SKILL.md     Gmail inbox management
+│   ├── google-calendar/   Calendar events, invites, availability
+│   └── slack/SKILL.md     Slack conversations and messages
 │
 │  ← Scripts (scripts/)
 ├── scripts/

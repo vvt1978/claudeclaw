@@ -70,6 +70,46 @@ function createSchema(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_wa_messages_chat ON wa_messages(chat_id, timestamp DESC);
 
+    CREATE TABLE IF NOT EXISTS conversation_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id     TEXT NOT NULL,
+      session_id  TEXT,
+      role        TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_convo_log_chat ON conversation_log(chat_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id         TEXT NOT NULL,
+      session_id      TEXT,
+      input_tokens    INTEGER NOT NULL DEFAULT 0,
+      output_tokens   INTEGER NOT NULL DEFAULT 0,
+      cache_read      INTEGER NOT NULL DEFAULT 0,
+      context_tokens  INTEGER NOT NULL DEFAULT 0,
+      cost_usd        REAL NOT NULL DEFAULT 0,
+      did_compact     INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_token_usage_session ON token_usage(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_token_usage_chat ON token_usage(chat_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS slack_messages (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id   TEXT NOT NULL,
+      channel_name TEXT NOT NULL,
+      user_name    TEXT NOT NULL,
+      body         TEXT NOT NULL,
+      timestamp    TEXT NOT NULL,
+      is_from_me   INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_messages_channel ON slack_messages(channel_id, created_at DESC);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       content=memories,
@@ -97,6 +137,17 @@ export function initDatabase(): void {
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   createSchema(db);
+  runMigrations(db);
+}
+
+/** Add columns that may not exist in older databases. */
+function runMigrations(database: Database.Database): void {
+  // Add context_tokens column to token_usage (introduced for accurate context tracking)
+  const cols = database.prepare(`PRAGMA table_info(token_usage)`).all() as Array<{ name: string }>;
+  const hasContextTokens = cols.some((c) => c.name === 'context_tokens');
+  if (!hasContextTokens) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -323,6 +374,69 @@ export function markWaMessageSent(id: number): void {
 
 // ── WhatsApp messages ────────────────────────────────────────────────
 
+// ── Conversation Log ──────────────────────────────────────────────────
+
+export interface ConversationTurn {
+  id: number;
+  chat_id: string;
+  session_id: string | null;
+  role: string;
+  content: string;
+  created_at: number;
+}
+
+export function logConversationTurn(
+  chatId: string,
+  role: 'user' | 'assistant',
+  content: string,
+  sessionId?: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO conversation_log (chat_id, session_id, role, content, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(chatId, sessionId ?? null, role, content, now);
+}
+
+export function getRecentConversation(
+  chatId: string,
+  limit = 20,
+): ConversationTurn[] {
+  return db
+    .prepare(
+      `SELECT * FROM conversation_log WHERE chat_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as ConversationTurn[];
+}
+
+/**
+ * Prune old conversation_log entries, keeping only the most recent N rows per chat.
+ * Called alongside memory decay to prevent unbounded disk growth.
+ */
+export function pruneConversationLog(keepPerChat = 500): void {
+  // Get distinct chat IDs
+  const chats = db
+    .prepare('SELECT DISTINCT chat_id FROM conversation_log')
+    .all() as Array<{ chat_id: string }>;
+
+  const deleteStmt = db.prepare(`
+    DELETE FROM conversation_log
+    WHERE chat_id = ? AND id NOT IN (
+      SELECT id FROM conversation_log
+      WHERE chat_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    )
+  `);
+
+  for (const chat of chats) {
+    deleteStmt.run(chat.chat_id, chat.chat_id, keepPerChat);
+  }
+}
+
+// ── WhatsApp messages ────────────────────────────────────────────────
+
 export function saveWaMessage(
   chatId: string,
   contactName: string,
@@ -335,4 +449,120 @@ export function saveWaMessage(
     `INSERT INTO wa_messages (chat_id, contact_name, body, timestamp, is_from_me, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(chatId, contactName, body, timestamp, isFromMe ? 1 : 0, now);
+}
+
+// ── Slack messages ────────────────────────────────────────────────
+
+export function saveSlackMessage(
+  channelId: string,
+  channelName: string,
+  userName: string,
+  body: string,
+  timestamp: string,
+  isFromMe: boolean,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO slack_messages (channel_id, channel_name, user_name, body, timestamp, is_from_me, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(channelId, channelName, userName, body, timestamp, isFromMe ? 1 : 0, now);
+}
+
+export interface SlackMessageRow {
+  id: number;
+  channel_id: string;
+  channel_name: string;
+  user_name: string;
+  body: string;
+  timestamp: string;
+  is_from_me: number;
+  created_at: number;
+}
+
+export function getRecentSlackMessages(channelId: string, limit = 20): SlackMessageRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM slack_messages WHERE channel_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(channelId, limit) as SlackMessageRow[];
+}
+
+// ── Token Usage ──────────────────────────────────────────────────────
+
+export function saveTokenUsage(
+  chatId: string,
+  sessionId: string | undefined,
+  inputTokens: number,
+  outputTokens: number,
+  cacheRead: number,
+  contextTokens: number,
+  costUsd: number,
+  didCompact: boolean,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now);
+}
+
+export interface SessionTokenSummary {
+  turns: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  lastCacheRead: number;
+  lastContextTokens: number;
+  totalCostUsd: number;
+  compactions: number;
+  firstTurnAt: number;
+  lastTurnAt: number;
+}
+
+export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | null {
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(*)           as turns,
+         SUM(input_tokens)  as totalInputTokens,
+         SUM(output_tokens) as totalOutputTokens,
+         SUM(cost_usd)      as totalCostUsd,
+         SUM(did_compact)   as compactions,
+         MIN(created_at)    as firstTurnAt,
+         MAX(created_at)    as lastTurnAt
+       FROM token_usage WHERE session_id = ?`,
+    )
+    .get(sessionId) as {
+      turns: number;
+      totalInputTokens: number;
+      totalOutputTokens: number;
+      totalCostUsd: number;
+      compactions: number;
+      firstTurnAt: number;
+      lastTurnAt: number;
+    } | undefined;
+
+  if (!row || row.turns === 0) return null;
+
+  // Get the most recent turn's context_tokens (actual context window size from last API call)
+  // Falls back to cache_read for backward compat with rows before the migration
+  const lastRow = db
+    .prepare(
+      `SELECT cache_read, context_tokens FROM token_usage
+       WHERE session_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(sessionId) as { cache_read: number; context_tokens: number } | undefined;
+
+  return {
+    turns: row.turns,
+    totalInputTokens: row.totalInputTokens,
+    totalOutputTokens: row.totalOutputTokens,
+    lastCacheRead: lastRow?.cache_read ?? 0,
+    lastContextTokens: lastRow?.context_tokens ?? lastRow?.cache_read ?? 0,
+    totalCostUsd: row.totalCostUsd,
+    compactions: row.compactions,
+    firstTurnAt: row.firstTurnAt,
+    lastTurnAt: row.lastTurnAt,
+  };
 }

@@ -10,6 +10,8 @@ const envConfig = readEnvFile([
   'ELEVENLABS_API_KEY',
   'ELEVENLABS_VOICE_ID',
   'WHATSAPP_ENABLED',
+  'SLACK_USER_TOKEN',
+  'CONTEXT_LIMIT',
 ]);
 
 export const TELEGRAM_BOT_TOKEN =
@@ -21,6 +23,9 @@ export const ALLOWED_CHAT_ID =
 
 export const WHATSAPP_ENABLED =
   (process.env.WHATSAPP_ENABLED || envConfig.WHATSAPP_ENABLED || '').toLowerCase() === 'true';
+
+export const SLACK_USER_TOKEN =
+  process.env.SLACK_USER_TOKEN || envConfig.SLACK_USER_TOKEN || '';
 
 // Voice — read via readEnvFile, not process.env
 export const GROQ_API_KEY = envConfig.GROQ_API_KEY ?? '';
@@ -42,3 +47,10 @@ export const MAX_MESSAGE_LENGTH = 4096;
 // How often to refresh the typing indicator while Claude is thinking (ms).
 // Telegram's typing action expires after ~5s, so 4s keeps it continuous.
 export const TYPING_REFRESH_MS = 4000;
+
+// Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
+// Override via CONTEXT_LIMIT in .env if using a different model variant.
+export const CONTEXT_LIMIT = parseInt(
+  process.env.CONTEXT_LIMIT || envConfig.CONTEXT_LIMIT || '1000000',
+  10,
+);

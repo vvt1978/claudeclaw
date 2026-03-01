@@ -102,13 +102,32 @@ You maintain context between messages via Claude Code session resumption. You do
 
 ### `convolife`
 When [YOUR NAME] says "convolife", check the remaining context window and report back. Steps:
-1. Find the current session JSONL. The path is `~/.claude/projects/` followed by the project root path with slashes replaced by hyphens (e.g. `/Users/you/projects/claudeclaw` → `-Users-you-projects-claudeclaw`). Run: `ls ~/.claude/projects/ | grep claudeclaw` to find the exact folder.
-2. Get the latest cache_read_input_tokens value: `grep -o '"cache_read_input_tokens":[0-9]*' <file> | tail -1 | grep -o '[0-9]*'`
-3. Calculate: used = that number, limit = 200000, remaining = limit - used, percent_used = used/limit * 100
-4. Report in this format:
+1. Get the current session ID: `sqlite3 [PATH TO CLAUDECLAW]/store/claudeclaw.db "SELECT session_id FROM sessions LIMIT 1;"`
+2. Query the token_usage table for context size and session stats:
+```bash
+sqlite3 [PATH TO CLAUDECLAW]/store/claudeclaw.db "
+  SELECT
+    COUNT(*)                as turns,
+    MAX(context_tokens)     as last_context,
+    SUM(output_tokens)      as total_output,
+    SUM(cost_usd)           as total_cost,
+    SUM(did_compact)        as compactions
+  FROM token_usage WHERE session_id = '<SESSION_ID>';
+"
 ```
-Context window: XX% used
-~XXk tokens remaining
+3. Also get the first turn's context_tokens as baseline (system prompt overhead):
+```bash
+sqlite3 [PATH TO CLAUDECLAW]/store/claudeclaw.db "
+  SELECT context_tokens as baseline FROM token_usage
+  WHERE session_id = '<SESSION_ID>'
+  ORDER BY created_at ASC LIMIT 1;
+"
+```
+4. Calculate conversation usage: context_limit = 1000000 (or CONTEXT_LIMIT from .env), available = context_limit - baseline, conversation_used = last_context - baseline, percent_used = conversation_used / available * 100. If context_tokens is 0 (old data), fall back to MAX(cache_read) with the same logic.
+5. Report in this format:
+```
+Context: XX% (~XXk / XXk available)
+Turns: N | Compactions: N | Cost: $X.XX
 ```
 Keep it short.
 
